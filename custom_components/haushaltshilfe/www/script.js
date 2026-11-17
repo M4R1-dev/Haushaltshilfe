@@ -1212,7 +1212,7 @@ async function renderSidebars() {
         rooms.forEach((r, index) => {
             const roomTasks = todoDb.filter(t => t.room === r);
             const totalCount = roomTasks.length;
-            const hasUrgent = roomTasks.some(t => new Date(t.nextDate) <= todayEnd);
+            const hasUrgent = roomTasks.some(t => t.nextDate && new Date(t.nextDate) <= todayEnd);
             
             const isActive = activeRoom === r;
 
@@ -1883,6 +1883,10 @@ async function completeTodo(id) {
         if (t.room.trim() === "Müllabfuhr") {
             todoDb = todoDb.filter(x => String(x.id) !== String(id));
             await saveTodoDb(t.name, "Müll erledigt & entfernt 🗑️", who);
+        } else if (!t.nextDate) {
+            // Einmalige Aufgabe ohne Termin: nach dem Erledigen entfernen
+            todoDb = todoDb.filter(x => String(x.id) !== String(id));
+            await saveTodoDb(t.name, "erledigt & entfernt ✅", who);
         } else {
             t.lastDone = now.toISOString();
             let nextDate;
@@ -3447,7 +3451,11 @@ async function confirmInterval(einheit) {
     const timeVal = timeInput ? timeInput.value : "10:00";
     const [hrs, mins] = timeVal.split(':').map(Number);
 
-    if (einheit === 'date') {
+    if (einheit === 'none') {
+        // Einmalige Aufgabe ohne Datum / Uhrzeit / Intervall
+        nextDate = null;
+        hours = null;
+    } else if (einheit === 'date') {
         if (!dateInput.value) { alert("Bitte Datum auswählen!"); return; }
         nextDate = new Date(dateInput.value);
         if (dateInput.value.length <= 10) {
@@ -3505,13 +3513,13 @@ async function confirmInterval(einheit) {
         name: tempTodoName, 
         room: activeRoom, 
         assignedTo: assignedPerson,
-        time: timeVal, 
-        intervalHours: hours, 
+        time: einheit === 'none' ? null : timeVal,
+        intervalHours: hours,
         intervalUnit: einheit,
         selectedWeekdays: einheit === 'days' ? [...selectedDays] : null,
         weeks: (einheit === 'days') ? (parseInt(valInput.value) || 1) : 1, 
         lastDone: now.toISOString(), 
-        nextDate: nextDate.toISOString() 
+        nextDate: nextDate ? nextDate.toISOString() : null
     };
 
     todoDb.push(newTodo);
@@ -3697,9 +3705,15 @@ function renderTodoList() {
 
     const filtered = todoDb
         .filter(t => t.room === activeRoom)
-        .sort((a, b) => new Date(a.nextDate) - new Date(b.nextDate));
-    
-    if (!filtered.length) { 
+        .sort((a, b) => {
+            // Aufgaben ohne Termin ans Ende
+            const ta = a.nextDate ? new Date(a.nextDate).getTime() : Infinity;
+            const tb = b.nextDate ? new Date(b.nextDate).getTime() : Infinity;
+            if (ta === tb) return 0;
+            return ta - tb;
+        });
+
+    if (!filtered.length) {
         ul.innerHTML = "<li style='text-align:center; padding:20px;'>Raum sauber! ✨</li>"; 
         return; 
     }
@@ -3735,6 +3749,11 @@ function renderTodoList() {
             timeText = "Morgen";
         }
 
+        if (!t.nextDate) {
+            statusColor = "var(--primary)";
+            timeText = "Offen";
+        }
+
         let btnLabel = isOverdue ? "Zurücksetzen 🔄" : "Erledigt ✅";
 
         const formatDT = (isoStr) => {
@@ -3762,7 +3781,7 @@ function renderTodoList() {
                     <span class="todo-pill" style="color:${statusColor}; background:${statusColor}15; border: 1px solid ${statusColor}30;">${escapeHtml(timeText)}</span>
                 </div>
                 <div class="todo-meta" style="color:var(--gray);">
-                    <span>📅 Fällig: ${escapeHtml(formatDT(t.nextDate))} Uhr</span>
+                    <span>📅 Fällig: ${t.nextDate ? escapeHtml(formatDT(t.nextDate)) + " Uhr" : "ohne Termin"}</span>
                     <span>✅ Zuletzt: ${t.lastDone ? escapeHtml(formatDT(t.lastDone)) : 'Neu'}</span>
                 </div>
             </div>
@@ -6708,7 +6727,7 @@ async function loadTrash() {
                 reminderDate.setDate(reminderDate.getDate() - 1);
                 reminderDate.setHours(18, 0, 0, 0);
 
-                const taskExists = todoDb.some(t => t.name === taskName && t.nextDate.startsWith(reminderDate.toISOString().split('T')[0]));
+                const taskExists = todoDb.some(t => t.name === taskName && (t.nextDate || "").startsWith(reminderDate.toISOString().split('T')[0]));
 
                 if (!taskExists && reminderDate > new Date()) {
                     const newTrashTodo = {
@@ -6779,7 +6798,7 @@ async function syncTrashToTodos() {
                 termin.setHours(18, 0, 0, 0);
 
                 const taskName = `🗑️ ${s.name} rausstellen`;
-                const exists = todoDb.some(t => t.name === taskName && t.nextDate.startsWith(termin.toISOString().split('T')[0]));
+                const exists = todoDb.some(t => t.name === taskName && (t.nextDate || "").startsWith(termin.toISOString().split('T')[0]));
 
                 if (!exists) {
                     const newTrashTodo = {
@@ -7781,7 +7800,7 @@ async function updateAppBadges() {
     const todayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59);
     
     const urgentCount = (todoDb || []).filter(t => {
-        const isUrgent = new Date(t.nextDate) <= todayEnd;
+        const isUrgent = !!t.nextDate && new Date(t.nextDate) <= todayEnd;
         const isRelevant = t.room !== "Müll"; 
         return isUrgent && isRelevant;
     }).length;
